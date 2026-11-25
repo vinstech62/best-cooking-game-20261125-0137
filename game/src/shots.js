@@ -1,79 +1,118 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// The screenshot scenes behind ?shot=cover|assembly|serve|rush. Each one builds a
+// real game state with the same rules as play (orders, grill timers, a plate
+// mid-assembly) and freezes the day clock, so the frame is a genuine render of
+// the game at a moment a player can reach — and the same URL always gives the
+// same frame.
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+import { ITEM, createRun } from './state.js';
+import { createOrderBoard } from './orders.js';
+import { createKitchen } from './kitchen.js';
+import { createChef } from './chef.js';
+import { SCREEN_PLAY } from './render.js';
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
-    }
-  }
-  return Infinity;
+function baseGame() {
+  const run = createRun();
+  const board = createOrderBoard();
+  const kitchen = createKitchen();
+  const chef = createChef();
+  return { run, board, kitchen, chef, time: 0, hint: null, highlight: null };
 }
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
-  }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
-    }
-  }
-  return best;
+function ticket(board, id, recipeId, name, items, patience, maxPatience) {
+  board.orders.push({ id, recipeId, name, items, patience, maxPatience, born: 0 });
+  board.nextId = Math.max(board.nextId, id + 1);
 }
 
-/**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
- */
-export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
+/** Set `game` to the named scene and return the screen to draw over it. */
+export function stageShot(name, game) {
+  const fresh = baseGame();
+  Object.assign(game, fresh);
+  const { run, board, kitchen, chef } = game;
+
+  if (name === 'assembly') {
+    run.timeLeft = 132;
+    run.score = 340;
+    run.coins = 58;
+    run.combo = 2;
+    ticket(board, 1, 'classic', 'Classic Burger', ['bun', 'patty', 'choppedLettuce'], 38, 55);
+    ticket(board, 2, 'cheese', 'Cheese Melt', ['bun', 'patty', 'cheese', 'choppedTomato'], 22, 50);
+    kitchen.plates[0].items = ['bun', 'patty', 'cheese'];
+    kitchen.chop.item = 'lettuce';
+    kitchen.chop.progress = 0.7;
+    kitchen.grill[0].item = 'rawPatty';
+    kitchen.grill[0].seconds = 4;
+    chef.x = 380;
+    chef.y = 470;
+    chef.carrying = null;
+    game.hint = 'Chopping lettuce — hold SPACE to finish, then plate it';
+    game.highlight = { kind: 'chop', x: 380, y: 310 };
+    return { screen: SCREEN_PLAY };
   }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
+
+  if (name === 'serve') {
+    run.timeLeft = 96;
+    run.score = 720;
+    run.coins = 124;
+    run.combo = 3;
+    ticket(board, 1, 'classic', 'Classic Burger', ['bun', 'patty', 'choppedLettuce'], 41, 55);
+    ticket(board, 2, 'garden', 'Garden Stack', ['bun', 'choppedLettuce', 'choppedTomato', 'cheese'], 30, 50);
+    kitchen.plates[0].items = ['bun', 'patty', 'choppedLettuce'];
+    kitchen.bellRing = 0.6;
+    chef.x = 1120;
+    chef.y = 470;
+    chef.carrying = null;
+    game.time = 0.2;
+    run.popups.push({ x: 1180, y: 240, text: '+140', color: '#f2c94c', age: 0.2, life: 1.4 });
+    game.hint = 'Classic Burger ready — ring the bell to serve it!';
+    game.highlight = { kind: 'bell', x: 1180, y: 310 };
+    return { screen: SCREEN_PLAY };
   }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+
+  if (name === 'rush') {
+    run.timeLeft = 47;
+    run.score = 1150;
+    run.coins = 210;
+    run.combo = 4;
+    ticket(board, 1, 'double', 'Double Trouble', ['bun', 'patty', 'patty', 'cheese'], 6, 40);
+    ticket(board, 2, 'cheese', 'Cheese Melt', ['bun', 'patty', 'cheese', 'choppedTomato'], 18, 45);
+    ticket(board, 3, 'classic', 'Classic Burger', ['bun', 'patty', 'choppedLettuce'], 26, 50);
+    ticket(board, 4, 'garden', 'Garden Stack', ['bun', 'choppedLettuce', 'choppedTomato', 'cheese'], 33, 48);
+    kitchen.grill[0].item = 'rawPatty';
+    kitchen.grill[0].seconds = 15;
+    kitchen.grill[1].item = 'rawPatty';
+    kitchen.grill[1].seconds = 5;
+    kitchen.chop.item = 'tomato';
+    kitchen.chop.progress = 0.45;
+    kitchen.plates[0].items = ['bun', 'patty'];
+    chef.x = 700;
+    chef.y = 480;
+    chef.carrying = ITEM.RAW_PATTY;
+    game.time = 0.4;
+    game.hint = 'Rush hour! One ticket is about to walk away — and a patty is burning';
+    game.highlight = { kind: 'grill', x: 680, y: 310 };
+    return { screen: SCREEN_PLAY };
+  }
+
+  // cover: the busy kitchen at its best — orders waiting, a dish mid-assembly,
+  // salad on the board, patties on the grill, the day clock running.
+  run.timeLeft = 151;
+  run.score = 480;
+  run.coins = 86;
+  run.combo = 2;
+  ticket(board, 1, 'classic', 'Classic Burger', ['bun', 'patty', 'choppedLettuce'], 44, 55);
+  ticket(board, 2, 'cheese', 'Cheese Melt', ['bun', 'patty', 'cheese', 'choppedTomato'], 30, 50);
+  ticket(board, 3, 'garden', 'Garden Stack', ['bun', 'choppedLettuce', 'choppedTomato', 'cheese'], 18, 48);
+  kitchen.plates[0].items = ['bun', 'patty'];
+  kitchen.chop.item = 'lettuce';
+  kitchen.chop.progress = 0.6;
+  kitchen.grill[0].item = 'rawPatty';
+  kitchen.grill[0].seconds = 5;
+  kitchen.grill[1].item = 'rawPatty';
+  kitchen.grill[1].seconds = 8;
+  chef.x = 640;
+  chef.y = 500;
+  chef.carrying = ITEM.TOMATO;
+  game.hint = 'WASD / click to move  •  E to use a station  •  hold SPACE to chop';
+  game.highlight = { kind: 'grill', x: 680, y: 310 };
+  return { screen: SCREEN_PLAY };
 }
